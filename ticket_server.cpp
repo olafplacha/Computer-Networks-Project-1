@@ -17,14 +17,14 @@ const long int MIN_TIMEOUT = 1;
 const uint8_t NUMBER_BASE = 10;
 const string USAGE_MESSAGE = "Usage: [-f file] [-p port] [-t timeout]\n";
 
-void validate_range(long int value, long int min, long int max, string&& option) {
+void validate_range(const long int& value, const long int& min, const long int& max, const string&& option) {
     if (value < min || value > max) {
         cerr << option << " is expected to be in the range: <" << min << "; " << max << ">\n";
         exit(EXIT_FAILURE);
     }
 }
 
-long int parse_numerical(char* p)
+long int parse_numerical(const char* p)
 {
     char* tmp;
     long int res = strtol(p, &tmp, NUMBER_BASE);
@@ -35,7 +35,7 @@ long int parse_numerical(char* p)
     return res;
 }
 
-tuple<string, uint16_t, uint32_t> parse_arguments(int argc, char* argv[]) 
+tuple<string, uint16_t, uint32_t> parse_arguments(const int& argc, char* argv[]) 
 {
     string file_name;
     bool file_overwritten = false;
