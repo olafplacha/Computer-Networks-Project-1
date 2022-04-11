@@ -7,17 +7,30 @@
 #include <vector>
 #include <sstream>
 #include <unordered_set>
+#include <unordered_map>
+#include <memory>
+#include <deque>
+#include <chrono>
 
 using std::tuple;
 using std::pair;
 using std::string;
 using std::vector;
 using std::unordered_set;
+using std::unordered_map;
+using std::deque;
 using std::cerr;
 using std::cout;
 
-using tickets_count_t = uint16_t;
-using events_collection_t = vector<pair<string, tickets_count_t>>;
+using ticket_count_t = uint16_t;
+using reservation_id_t = uint32_t;
+using events_collection_t = vector<pair<string, ticket_count_t>>;
+
+class Reservation;
+using reservation_ptr = std::shared_ptr<Reservation>;
+
+class Event;
+using event_ptr = std::shared_ptr<Event>;
 
 const uint16_t DEFAULT_PORT_NUMBER = 2022;
 const uint32_t DEFAULT_TIMEOUT = 5;
@@ -29,6 +42,121 @@ const uint8_t NUMBER_BASE = 10;
 const uint8_t TICKET_CODE_LENGTH = 7;
 const uint8_t COOKIE_LENGTH = 48;
 const string USAGE_MESSAGE = "Usage: [-f file] [-p port] [-t timeout]\n";
+
+class Reservation {
+    public:
+        Reservation(const reservation_id_t& id_, const time_t& expiration_time_, const ticket_count_t& ticket_count_, 
+            const string& cookie_, const event_ptr& event_): id(id_), expiration_time(expiration_time_), 
+            ticket_count(ticket_count_), cookie(cookie_), event(event_), completed(false) {};
+
+        reservation_id_t getId() const {
+            return id;
+        }
+
+        event_ptr getEvent() const {
+            return event;
+        }
+
+        void complete() {
+            completed = true;
+        }
+
+        bool isCompleted() const {
+            return completed;
+        }
+
+        bool isValid() const {
+            return expiration_time >= std::time(0);
+        }
+
+        ticket_count_t getNumberOfTicketsReserved() const {
+            return ticket_count;
+        }
+
+        bool compareCookie(const string& cookie_) const {
+            return cookie == cookie_;
+        }
+
+    private:
+        const reservation_id_t id;
+        const time_t expiration_time;
+        const ticket_count_t ticket_count;
+        const string cookie;
+        const event_ptr event;
+        bool completed;
+};
+
+// This class represents one event.
+class Event {
+    public:
+        Event(const string& description_, const ticket_count_t ticket_count_) : description(description_),
+            ticket_count(ticket_count_) {};
+
+        bool reduceTicketCount(ticket_count_t num) {
+            if (num > ticket_count) {
+                // There are not enough tickets!
+                return false;
+            }
+            ticket_count -= num;
+            return true;
+        }
+
+        void increaseTicketCount(ticket_count_t num) {
+            ticket_count += num;
+        }
+
+    private:
+        const string description;
+        ticket_count_t ticket_count;
+        
+};
+
+class EventDatabase {
+    public:
+
+    private:
+        deque<reservation_ptr> pending_reservations_queue;
+        unordered_map<reservation_id_t, reservation_ptr> reservations_map;
+
+        // This method removes reservations which are invalid or have been completed (corresponding tickets
+        // have been collected by the client) from the beginning of the deque.
+        //
+        // As soon as this method returns, the following invariant will hold:
+        // - either the pending_reservations deque will be empty
+        // - or the first element of the deque will be a valid reservation.
+        // 
+        // Reservations, which are added to the pending_reservations deque, have increasing expiration date.
+        // It implies, that after the method returns, each reservation in the deque will be:
+        // - either still valid
+        // - or yet completed.
+        void cleanUpInvalidAndCompletedReservations() {
+            while (pending_reservations_queue.size() > 0) {
+                reservation_ptr r = pending_reservations_queue.front();
+                if (r->isCompleted()) {
+                    // The reservation is completed, tickets were already collected by the client.
+                    pending_reservations_queue.pop_front();
+                }
+                else if (!r->isValid()) {
+                    // The reservation is not valid.
+                    pending_reservations_queue.pop_front();
+                    
+                    // Give back the reserved tickets.
+                    ticket_count_t r_ticket_count = r->getNumberOfTicketsReserved();
+                    event_ptr r_event = r->getEvent();
+                    r_event->increaseTicketCount(r_ticket_count);
+
+                    // Delete the reservation from the reservation map.
+                    reservation_id_t r_id = r->getId();
+                    reservations_map.erase(r_id);
+                }
+                else {
+                    // The reservation is not completed and still valid. Reservations after this point
+                    // must be either valid or completed.
+                    break;
+                }
+            }
+        }
+};
 
 struct Ticket
 {
@@ -149,7 +277,7 @@ events_collection_t parse_input_file(const string& file_name)
     events_collection_t collection;
     string line;
     string description;
-    tickets_count_t tickets_count;
+    ticket_count_t tickets_count;
     bool flag = true;
 
     while (std::getline(infile, line)) {
