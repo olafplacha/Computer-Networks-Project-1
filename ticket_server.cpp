@@ -6,11 +6,13 @@
 #include <fstream>
 #include <vector>
 #include <sstream>
+#include <unordered_set>
 
 using std::tuple;
 using std::pair;
 using std::string;
 using std::vector;
+using std::unordered_set;
 using std::cerr;
 using std::cout;
 
@@ -24,7 +26,62 @@ const long int MIN_PORT_NUMBER = 0;
 const long int MAX_TIMEOUT = 86400;
 const long int MIN_TIMEOUT = 1;
 const uint8_t NUMBER_BASE = 10;
+const uint8_t TICKET_CODE_LENGTH = 7;
+const uint8_t COOKIE_LENGTH = 48;
 const string USAGE_MESSAGE = "Usage: [-f file] [-p port] [-t timeout]\n";
+
+struct Ticket
+{
+    string code;
+};
+
+// This singleton class is responsible for generating unique tickets.
+class TicketGenerator {
+    public:
+        static TicketGenerator& getInstance()
+        {
+            static TicketGenerator instance(TICKET_CODE_LENGTH);
+            return instance;
+        }
+
+        Ticket generateUniqueTicket() {
+            Ticket ticket;
+            string code;
+            do
+            {
+                code = generateRandomCode();
+            } while (used_codes.find(code) != used_codes.end());
+            
+            // Mark the code as used.
+            used_codes.insert(code);
+            ticket.code = code;
+            return ticket;
+        }
+
+        // Delete copy constructor and copy assignment.
+        TicketGenerator(TicketGenerator const&) = delete;
+        void operator=(TicketGenerator const&) = delete;
+
+    private:
+        size_t code_len;
+        unordered_set<string> used_codes;
+
+        TicketGenerator(const size_t& code_len_) : code_len(code_len_) {};
+        
+        char generateRandomSymbol() const {
+            static const char symbols[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            return symbols[rand() % (sizeof(symbols) - 1)];
+        }
+
+        string generateRandomCode() const {
+            string code;
+            for (size_t i = 0; i < code_len; i++)
+            {
+                code += generateRandomSymbol();
+            }
+            return code;
+        }
+};
 
 void validate_range(const long int& value, const long int& min, const long int& max, const string&& option) 
 {
