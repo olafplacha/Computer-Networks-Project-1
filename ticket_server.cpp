@@ -2,11 +2,20 @@
 #include <iostream>
 #include <stdlib.h>
 #include <tuple>
+#include <string>
+#include <fstream>
+#include <vector>
+#include <sstream>
 
 using std::tuple;
+using std::pair;
 using std::string;
+using std::vector;
 using std::cerr;
 using std::cout;
+
+using tickets_count_t = uint16_t;
+using events_collection_t = vector<pair<string, tickets_count_t>>;
 
 const uint16_t DEFAULT_PORT_NUMBER = 2022;
 const uint32_t DEFAULT_TIMEOUT = 5;
@@ -17,7 +26,8 @@ const long int MIN_TIMEOUT = 1;
 const uint8_t NUMBER_BASE = 10;
 const string USAGE_MESSAGE = "Usage: [-f file] [-p port] [-t timeout]\n";
 
-void validate_range(const long int& value, const long int& min, const long int& max, const string&& option) {
+void validate_range(const long int& value, const long int& min, const long int& max, const string&& option) 
+{
     if (value < min || value > max) {
         cerr << option << " is expected to be in the range: <" << min << "; " << max << ">\n";
         exit(EXIT_FAILURE);
@@ -28,7 +38,7 @@ long int parse_numerical(const char* p)
 {
     char* tmp;
     long int res = strtol(p, &tmp, NUMBER_BASE);
-    if (*tmp != '\0'){
+    if (*tmp != '\0') {
         cerr << "Numerical value expected as option!\n";
         exit(EXIT_FAILURE);
     }
@@ -71,10 +81,38 @@ tuple<string, uint16_t, uint32_t> parse_arguments(const int& argc, char* argv[])
     return {file_name, (uint16_t) port_number, (uint32_t) timeout};
 }
 
-int main(int argc, char* argv[]) {
-    
+events_collection_t parse_input_file(const string& file_name)
+{
+    std::ifstream infile(file_name);
+    if (infile.fail()) {
+        cerr << "File does not exist or you do not have sufficient permissions to read it!\n";
+        exit(EXIT_FAILURE);
+    }
+
+    events_collection_t collection;
+    string line;
+    string description;
+    tickets_count_t tickets_count;
+    bool flag = true;
+
+    while (std::getline(infile, line)) {
+        if (flag) {
+            description = line;
+        }
+        else {
+            std::istringstream(line) >> tickets_count;
+            collection.push_back({description, tickets_count});
+        }
+        flag = !flag;
+    }
+    return collection;
+}
+
+int main(int argc, char* argv[]) 
+{
     const auto [file_name, port_number, timeout] = parse_arguments(argc, argv);
-    cout << file_name << " " << port_number << " " << timeout << std::endl;
+    events_collection_t events_collection = parse_input_file(file_name);
+
     while (true)
     {
         
