@@ -11,6 +11,7 @@
 #include <memory>
 #include <deque>
 #include <chrono>
+#include <netinet/in.h>
 
 using std::tuple;
 using std::pair;
@@ -237,7 +238,7 @@ class EventDatabase {
             return reservation;
         }
 
-        // Returns non-empty vector with tickers iff tickets can be collected.
+        // Returns non-empty vector with tickets iff tickets can be collected.
         vector<Ticket> tryToCollectTickets(const reservation_id_t id, const string& cookie) {
             // Before checking if the tickets can be collected, clean up invalid reservations.
             cleanUpInvalidAndCompletedReservations();
@@ -433,10 +434,37 @@ events_collection_t parse_input_file(const string& file_name)
     return collection;
 }
 
+int prepare_ipv4_socket(uint16_t port) {
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (socket_fd < 0) {
+        cerr << "Error occured while creating a socket! Errno: " << errno << '\n';
+        exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in server_address;
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_address.sin_port = htons(port);
+
+    if (bind(socket_fd, (struct sockaddr *) &server_address, sizeof(server_address)) < 0) {
+        cerr << "Error occured while binding a socket! Errno: " << errno << '\n';
+        exit(EXIT_FAILURE);
+    }
+    return socket_fd;
+}
+
 int main(int argc, char* argv[]) 
 {
     const auto [file_name, port_number, timeout] = parse_arguments(argc, argv);
     events_collection_t events_collection = parse_input_file(file_name);
+    
+    // Create EventDatabase instance, which provides all required functionalities.
+    EventDatabase db(events_collection, timeout);
+
+    // Prepare a socket for IPv4 UDP communication.
+    int socket_fd = prepare_ipv4_socket(port_number);
+
+    struct sockaddr_in client_address;
 
     while (true)
     {
