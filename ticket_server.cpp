@@ -453,6 +453,75 @@ int prepare_ipv4_socket(uint16_t port) {
     return socket_fd;
 }
 
+// Reads a message and sets the client's address.
+size_t get_client_message(const int& socket_fd, struct sockaddr_in* client_address, char* buffer) {
+    socklen_t address_length = sizeof(*client_address);
+    
+    ssize_t bytes_read = recvfrom(socket_fd, buffer, MAX_UDP_CAPACITY, 0, 
+        (struct sockaddr *) client_address, &address_length);
+
+    if (bytes_read < 0) {
+        cerr << "Error occured while receiving a message from a socket! Errno: " << errno << '\n';
+        exit(EXIT_FAILURE);
+    }
+    return bytes_read;
+}
+
+void process_get_events(const int& socket_fd, const struct sockaddr_in& client_address, char* buffer) {
+    
+}
+
+void process_get_reservation(const int& socket_fd, const struct sockaddr_in& client_address, char* buffer) {
+    
+}
+
+void process_get_tickets(const int& socket_fd, const struct sockaddr_in& client_address, char* buffer) {
+    
+}
+
+// Returns true iff message_id is known and the length is correct.
+bool proper_message_length(const message_t& message_id, const size_t& bytes_read) {
+    switch (message_id)
+    {
+        case 1:
+            // GET_EVENTS.
+            return bytes_read == sizeof(message_t);
+        case 3:
+            // GET_RESERVATION.
+            return bytes_read == sizeof(message_t) + sizeof(event_id_t) + sizeof(ticket_count_t);
+        case 5:
+            // GET_TICKETS.
+            return bytes_read == sizeof(message_t) + sizeof(reservation_id_t) + COOKIE_LENGTH * sizeof(char);
+        default:
+            // Unknown.
+            return false;
+    }
+}
+
+void process_client_request(const int& socket_fd, const struct sockaddr_in& client_address, 
+    char* buffer, const size_t& bytes_read) {
+    message_t message_id = buffer[0];
+
+    // Check if message_id is known and if the number of sent bytes is correct.
+    if (!proper_message_length(message_id, bytes_read)) {
+        // Ignore the message.
+        return;
+    }
+
+    switch (message_id)
+    {
+        case 1:
+            process_get_events(socket_fd, client_address, buffer);
+            break;
+        case 3:
+            process_get_reservation(socket_fd, client_address, buffer);
+            break;
+        case 5:
+            process_get_tickets(socket_fd, client_address, buffer);
+            break;
+    }
+}
+
 int main(int argc, char* argv[]) 
 {
     const auto [file_name, port_number, timeout] = parse_arguments(argc, argv);
@@ -464,13 +533,17 @@ int main(int argc, char* argv[])
     // Prepare a socket for IPv4 UDP communication.
     int socket_fd = prepare_ipv4_socket(port_number);
 
-    struct sockaddr_in client_address;
+    // Prepare a buffer which can fit any UDP packet's content.
+    char buffer[MAX_UDP_CAPACITY];
 
     while (true)
     {
-        
+        struct sockaddr_in client_address;
+        size_t bytes_read = get_client_message(socket_fd, &client_address, buffer);
+        process_client_request(socket_fd, client_address, buffer, bytes_read);
     }
 
+    close(socket_fd);
     return EXIT_SUCCESS;
 }
 
