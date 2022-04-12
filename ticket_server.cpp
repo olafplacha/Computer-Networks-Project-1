@@ -50,6 +50,59 @@ const size_t MAX_UDP_CAPACITY = 65507;
 const reservation_id_t MIN_RESERVATION_ID = 1000000;
 const string USAGE_MESSAGE = "Usage: [-f file] [-p port] [-t timeout]\n";
 
+struct Ticket
+{
+    string code;
+};
+
+// This singleton class is responsible for generating unique tickets.
+class TicketGenerator {
+    public:
+        static TicketGenerator& getInstance()
+        {
+            static TicketGenerator instance(TICKET_CODE_LENGTH);
+            return instance;
+        }
+
+        Ticket generateUniqueTicket() {
+            Ticket ticket;
+            string code;
+            do
+            {
+                code = generateRandomCode();
+            } while (used_codes.find(code) != used_codes.end());
+            
+            // Mark the code as used.
+            used_codes.insert(code);
+            ticket.code = code;
+            return ticket;
+        }
+
+        // Delete copy constructor and copy assignment.
+        TicketGenerator(TicketGenerator const&) = delete;
+        void operator=(TicketGenerator const&) = delete;
+
+    private:
+        size_t code_len;
+        unordered_set<string> used_codes;
+
+        TicketGenerator(const size_t& code_len_) : code_len(code_len_) {};
+        
+        char generateRandomSymbol() const {
+            static const char symbols[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            return symbols[rand() % (sizeof(symbols) - 1)];
+        }
+
+        string generateRandomCode() const {
+            string code;
+            for (size_t i = 0; i < code_len; i++)
+            {
+                code += generateRandomSymbol();
+            }
+            return code;
+        }
+};
+
 class Reservation {
     public:
         Reservation(const reservation_id_t& id_, const time_t& expiration_time_, const ticket_count_t& ticket_count_, 
@@ -64,8 +117,13 @@ class Reservation {
             return event;
         }
 
-        void complete() {
-            completed = true;
+        vector<Ticket> collectTickets() {
+            if (!completed) {
+                // Generate tickets lazily, as soon as they are collected.
+                completed = true;
+                generateTickets();
+            }
+            return tickets;
         }
 
         bool isCompleted() const {
@@ -90,7 +148,17 @@ class Reservation {
         const ticket_count_t ticket_count;
         const string cookie;
         const event_ptr event;
+        vector<Ticket> tickets;
         bool completed;
+
+        void generateTickets() {
+            TicketGenerator& generator = TicketGenerator::getInstance();
+            for (size_t i = 0; i < ticket_count; i++)
+            {
+                Ticket t = generator.generateUniqueTicket();
+                tickets.push_back(t);
+            }
+        }
 };
 
 // This class represents one event.
@@ -110,6 +178,14 @@ class Event {
 
         void increaseTicketCount(ticket_count_t num) {
             ticket_count += num;
+        }
+
+        ticket_count_t getTicketCount() const {
+            return ticket_count;
+        }
+
+        string getDescription() const {
+            return description;
         }
 
     private:
@@ -136,29 +212,51 @@ class EventDatabase {
             return events_vec;
         }
 
-        // Returns true iff reservation has been successfully created.
-        pair<bool, reservation_id_t> tryToCreateReservation(event_id_t event_id, ticket_count_t ticket_count) {
+        // Returns valid ptr iff reservation has been successfully created.
+        reservation_ptr tryToCreateReservation(const event_id_t& event_id, const ticket_count_t& ticket_count) {
             // Before validating the request, clean up invalid reservations.
             cleanUpInvalidAndCompletedReservations();
             // Check if event_id is valid.
             if (event_id >= events_vec.size()) {
                 // There is no event with provided event_id.
-                return {false, 0};
+                return nullptr;
             }
             // Check if provided number of tickets is positive and if it would fit into UDP datagram.
             if (ticket_count == 0 || !notTooManyTickets(ticket_count)) {
-                return {false, 0};
+                return nullptr;
             }
             // Try to create a reservation.
             event_ptr event = events_vec.at(event_id);
             bool success = event->reduceTicketCount(ticket_count);
             if (!success) {
                 // There were not enough tickets!
-                return {false, 0};
+                return nullptr;
             }
             // Create reservation.
-            reservation_id_t id = createReservation(event, ticket_count);
-            return {true, id};
+            reservation_ptr reservation = createReservation(event, ticket_count);
+            return reservation;
+        }
+
+        // Returns non-empty vector with tickers iff tickets can be collected.
+        vector<Ticket> tryToCollectTickets(const reservation_id_t id, const string& cookie) {
+            // Before checking if the tickets can be collected, clean up invalid reservations.
+            cleanUpInvalidAndCompletedReservations();
+            // The provided id will be in the reservation_map iff:
+            // - either it wasn't collected yet and is still valid
+            // - or is was collected before.
+            vector<Ticket> tickets;
+            auto it = reservations_map.find(id);
+            if (it == reservations_map.end()) {
+                // The request is invalid.
+                return tickets;
+            }
+            reservation_ptr reservation = it->second;
+            if (!reservation->compareCookie(cookie)) {
+                // The cookie is invalid.
+                return tickets;
+            }
+            tickets = reservation->collectTickets();
+            return tickets;
         }
 
         // Copied EventDatabase could lead to fatal bugs, e.g. tickets being gave back twice.
@@ -179,7 +277,7 @@ class EventDatabase {
             return req <= MAX_UDP_CAPACITY;
         }
 
-        reservation_id_t createReservation(const event_ptr& event, const ticket_count_t n) {
+        reservation_ptr createReservation(const event_ptr& event, const ticket_count_t& n) {
             reservation_id_t id = counter++;
             time_t expiration_time = std::time(0) + timeout;
             string cookie = generateUniqueCookie();
@@ -189,7 +287,7 @@ class EventDatabase {
             pending_reservations_queue.push_back(reservation);
             // And into the map.
             reservations_map.insert({id, reservation});
-            return id;
+            return reservation;
         }
 
         static string generateRandomCookie() {
@@ -250,59 +348,6 @@ class EventDatabase {
                     break;
                 }
             }
-        }
-};
-
-struct Ticket
-{
-    string code;
-};
-
-// This singleton class is responsible for generating unique tickets.
-class TicketGenerator {
-    public:
-        static TicketGenerator& getInstance()
-        {
-            static TicketGenerator instance(TICKET_CODE_LENGTH);
-            return instance;
-        }
-
-        Ticket generateUniqueTicket() {
-            Ticket ticket;
-            string code;
-            do
-            {
-                code = generateRandomCode();
-            } while (used_codes.find(code) != used_codes.end());
-            
-            // Mark the code as used.
-            used_codes.insert(code);
-            ticket.code = code;
-            return ticket;
-        }
-
-        // Delete copy constructor and copy assignment.
-        TicketGenerator(TicketGenerator const&) = delete;
-        void operator=(TicketGenerator const&) = delete;
-
-    private:
-        size_t code_len;
-        unordered_set<string> used_codes;
-
-        TicketGenerator(const size_t& code_len_) : code_len(code_len_) {};
-        
-        char generateRandomSymbol() const {
-            static const char symbols[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-            return symbols[rand() % (sizeof(symbols) - 1)];
-        }
-
-        string generateRandomCode() const {
-            string code;
-            for (size_t i = 0; i < code_len; i++)
-            {
-                code += generateRandomSymbol();
-            }
-            return code;
         }
 };
 
