@@ -22,7 +22,10 @@ using std::deque;
 using std::cerr;
 using std::cout;
 
+using message_t = uint8_t;
+using timeout_t = uint32_t;
 using ticket_count_t = uint16_t;
+using event_id_t = uint32_t;
 using reservation_id_t = uint32_t;
 using events_collection_t = vector<pair<string, ticket_count_t>>;
 
@@ -33,14 +36,18 @@ class Event;
 using event_ptr = std::shared_ptr<Event>;
 
 const uint16_t DEFAULT_PORT_NUMBER = 2022;
-const uint32_t DEFAULT_TIMEOUT = 5;
+const timeout_t DEFAULT_TIMEOUT = 5;
 const long int MAX_PORT_NUMBER = 65535;
 const long int MIN_PORT_NUMBER = 0;
 const long int MAX_TIMEOUT = 86400;
 const long int MIN_TIMEOUT = 1;
 const uint8_t NUMBER_BASE = 10;
 const uint8_t TICKET_CODE_LENGTH = 7;
-const uint8_t COOKIE_LENGTH = 48;
+const size_t COOKIE_LENGTH = 48;
+const uint8_t MIN_COOKIE_CODE = 33;
+const uint8_t MAX_COOKIE_CODE = 126;
+const size_t MAX_UDP_CAPACITY = 65507;
+const reservation_id_t MIN_RESERVATION_ID = 1000000;
 const string USAGE_MESSAGE = "Usage: [-f file] [-p port] [-t timeout]\n";
 
 class Reservation {
@@ -111,12 +118,100 @@ class Event {
         
 };
 
+// This class takes care of all operations performed on events.
 class EventDatabase {
     public:
+        EventDatabase(const events_collection_t& events_collection, const timeout_t& timeout_) 
+            : counter(MIN_RESERVATION_ID), timeout(timeout_) {
+            // Create Event instances.
+            for (auto& p : events_collection) {
+                event_ptr event = std::make_shared<Event>(p.first, p.second);
+                events_vec.push_back(event);
+            }
+        }
+
+        vector<event_ptr> getEvents() {
+            // Before events are returned, invalid reservations have to be cleaned up.
+            cleanUpInvalidAndCompletedReservations();
+            return events_vec;
+        }
+
+        // Returns true iff reservation has been successfully created.
+        pair<bool, reservation_id_t> tryToCreateReservation(event_id_t event_id, ticket_count_t ticket_count) {
+            // Before validating the request, clean up invalid reservations.
+            cleanUpInvalidAndCompletedReservations();
+            // Check if event_id is valid.
+            if (event_id >= events_vec.size()) {
+                // There is no event with provided event_id.
+                return {false, 0};
+            }
+            // Check if provided number of tickets is positive and if it would fit into UDP datagram.
+            if (ticket_count == 0 || !notTooManyTickets(ticket_count)) {
+                return {false, 0};
+            }
+            // Try to create a reservation.
+            event_ptr event = events_vec.at(event_id);
+            bool success = event->reduceTicketCount(ticket_count);
+            if (!success) {
+                // There were not enough tickets!
+                return {false, 0};
+            }
+            // Create reservation.
+            reservation_id_t id = createReservation(event, ticket_count);
+            return {true, id};
+        }
+
+        // Copied EventDatabase could lead to fatal bugs, e.g. tickets being gave back twice.
+        // Therefore copy constructor and copy assignment operator are deleted.
+        EventDatabase(EventDatabase const&) = delete;
+        void operator=(EventDatabase const&) = delete;
 
     private:
+        reservation_id_t counter;
+        const timeout_t timeout;
+        vector<event_ptr> events_vec;
         deque<reservation_ptr> pending_reservations_queue;
         unordered_map<reservation_id_t, reservation_ptr> reservations_map;
+
+        static bool notTooManyTickets(ticket_count_t n) {
+            size_t ticket_size = sizeof(char) * TICKET_CODE_LENGTH;
+            size_t req = sizeof(message_t) + sizeof(reservation_id_t) + sizeof(ticket_count_t) + n * ticket_size;
+            return req <= MAX_UDP_CAPACITY;
+        }
+
+        reservation_id_t createReservation(const event_ptr& event, const ticket_count_t n) {
+            reservation_id_t id = counter++;
+            time_t expiration_time = std::time(0) + timeout;
+            string cookie = generateUniqueCookie();
+            reservation_ptr reservation = std::make_shared<Reservation>(id, expiration_time, n, cookie, event);
+
+            // Insert the pending reservation into the queue.
+            pending_reservations_queue.push_back(reservation);
+            // And into the map.
+            reservations_map.insert({id, reservation});
+            return id;
+        }
+
+        static string generateRandomCookie() {
+            string cookie;
+            for (size_t i = 0; i < COOKIE_LENGTH; i++)
+            {
+                char c = MIN_COOKIE_CODE + rand() % (MAX_COOKIE_CODE - MIN_COOKIE_CODE + 1);
+                cookie += c;
+            }
+            return cookie;
+        }
+
+        string generateUniqueCookie() const {
+            static unordered_set<string> taken_cookies;
+            string cookie;
+            do
+            {
+                cookie = generateRandomCookie();
+            } while (taken_cookies.find(cookie) != taken_cookies.end());
+            taken_cookies.insert(cookie);
+            return cookie;
+        }
 
         // This method removes reservations which are invalid or have been completed (corresponding tickets
         // have been collected by the client) from the beginning of the deque.
