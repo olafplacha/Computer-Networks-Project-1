@@ -126,6 +126,10 @@ class Reservation {
             return event;
         }
 
+        time_t getExpirationTime() const {
+            return expiration_time;
+        }
+
         vector<Ticket> collectTickets() {
             if (!completed) {
                 // Generate tickets lazily, as soon as they are collected.
@@ -145,6 +149,10 @@ class Reservation {
 
         ticket_count_t getNumberOfTicketsReserved() const {
             return ticket_count;
+        }
+
+        string getCookie() const {
+            return cookie;
         }
 
         bool compareCookie(const string& cookie_) const {
@@ -475,8 +483,6 @@ size_t get_client_message(const int& socket_fd, struct sockaddr_in* client_addre
     return bytes_read;
 }
 
-
-
 bool put_event_into_buffer(const event_ptr& event, const event_id_t& id, char* buffer, size_t& bytes_in_buffer) {
     // Check if it fits into the buffer.
     ticket_count_t ticket_count = event->getTicketCount();
@@ -541,13 +547,130 @@ void process_get_events(const int& socket_fd, const struct sockaddr_in* client_a
     }
 }
 
-// void process_get_reservation(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
-    
-// }
+void send_bad_request_response(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, uint32_t code) {
+    buffer[0] = BAD_REQUEST;
+    uint32_t code_conv = htonl(code);
+    std::memcpy(buffer + 1, &code_conv, sizeof(uint32_t));
 
-// void process_get_tickets(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
+    ssize_t res = sendto(socket_fd, buffer, 1 + sizeof(uint32_t), 0, (struct sockaddr *) client_address, 
+        sizeof(*client_address));
+
+    if (res < 0) {
+        cerr << "Error occured while sending BAD_REQUEST message to the client! Errno: " << errno << '\n';
+        exit(EXIT_FAILURE);
+    }
+}
+
+struct __attribute__((packed)) reservation_request {
+    message_t message_id;
+    event_id_t event_id;
+    ticket_count_t ticket_count;
+};
+
+struct __attribute__((packed)) reservation_response {
+    message_t message_id;
+    reservation_id_t reservation_id;
+    event_id_t event_id;
+    ticket_count_t ticket_count;
+    char cookie[COOKIE_LENGTH];
+    time_t expiration_time;
+};
+
+void process_get_reservation(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
+    reservation_request* message = (reservation_request *) buffer;
+    message->event_id = ntohl(message->event_id);
+    message->ticket_count = ntohs(message->ticket_count);
     
-// }
+    // Try to place a reservation.
+    reservation_ptr reservation = db.tryToCreateReservation(message->event_id, message->ticket_count);
+
+    if (reservation == nullptr) {
+        // The reservation failed.
+        send_bad_request_response(socket_fd, client_address, buffer, message->event_id);
+        return;
+    }
+    reservation_response response;
+    response.message_id = RESERVATION;
+    response.reservation_id = htonl(reservation->getId());
+    response.event_id = htonl(message->event_id);
+    response.ticket_count = htons(message->ticket_count);
+    response.expiration_time = htobe64(reservation->getExpirationTime());
+    string cookie = reservation->getCookie();
+    for (size_t i = 0; i < COOKIE_LENGTH; i++)
+    {
+        response.cookie[i] = cookie.at(i);
+    }
+    
+    // Put the response in the buffer.
+    std::memcpy(buffer, &response, sizeof(reservation_response));
+
+    ssize_t res = sendto(socket_fd, buffer, sizeof(reservation_response), 0, (struct sockaddr *) client_address, 
+        sizeof(*client_address));
+
+    if (res < 0) {
+        cerr << "Error occured while sending reservation message to the client! Errno: " << errno << '\n';
+        exit(EXIT_FAILURE);
+    }
+}
+
+struct __attribute__((packed)) tickets_request {
+    message_t message_id;
+    reservation_id_t reservation_id;
+    char cookie[COOKIE_LENGTH];
+};
+
+struct __attribute__((packed)) tickets_response {
+    message_t message_id;
+    reservation_id_t reservation_id;
+    ticket_count_t ticket_count;
+};
+
+void process_get_tickets(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
+    tickets_request* message = (tickets_request *) buffer;
+    message->reservation_id = htonl(message->reservation_id);
+
+    string cookie = "";
+    for (size_t i = 0; i < COOKIE_LENGTH; i++)
+    {
+        cookie += message->cookie[i];
+    }
+     
+    vector<Ticket> tickets = db.tryToCollectTickets(message->reservation_id, cookie);
+    if (tickets.size() == 0) {
+        // The request could not be fulfilled.
+        send_bad_request_response(socket_fd, client_address, buffer, message->reservation_id);
+        return;
+    }
+
+    ticket_count_t ticket_count = tickets.size();
+    tickets_response response;
+    response.message_id = TICKETS;
+    response.reservation_id = htonl(message->reservation_id);
+    response.ticket_count = htons(ticket_count);
+
+    // Copy tickets' codes to array.
+    size_t ticket_arr_len = TICKET_CODE_LENGTH * ticket_count;
+    char tickets_arr[ticket_arr_len];
+    size_t i = 0;
+    for (auto& t : tickets) {
+        for (size_t j = 0; j < TICKET_CODE_LENGTH; j++)
+        {
+            tickets_arr[i++] = t.code.at(j);
+        }
+    }
+
+    // Put the response in the buffer.
+    std::memcpy(buffer, &response, sizeof(tickets_response));
+    std::memcpy(buffer + sizeof(tickets_response), &tickets_arr, ticket_arr_len);
+
+    ssize_t res = sendto(socket_fd, buffer, sizeof(reservation_response) + ticket_arr_len, 0, 
+        (struct sockaddr *) client_address, sizeof(*client_address));
+
+    if (res < 0) {
+        cerr << "Error occured while sending tickets to the client! Errno: " << errno << '\n';
+        exit(EXIT_FAILURE);
+    }
+}
 
 // Returns true iff message_id is known and the length is correct.
 bool proper_message_length(const message_t& message_id, const size_t& bytes_read) {
@@ -584,10 +707,10 @@ void process_client_request(const int& socket_fd, const struct sockaddr_in* clie
             process_get_events(socket_fd, client_address, buffer, db);
             break;
         case 3:
-            // process_get_reservation(socket_fd, client_address, buffer, db);
+            process_get_reservation(socket_fd, client_address, buffer, db);
             break;
         case 5:
-            // process_get_tickets(socket_fd, client_address, buffer, db);
+            process_get_tickets(socket_fd, client_address, buffer, db);
             break;
     }
 }
