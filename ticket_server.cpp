@@ -30,7 +30,6 @@ using std::unordered_set;
 using std::unordered_map;
 using std::deque;
 using std::cerr;
-using std::cout;
 
 using message_t = uint8_t;
 using description_length_t = uint8_t;
