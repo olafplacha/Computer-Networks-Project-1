@@ -12,6 +12,13 @@
 #include <deque>
 #include <chrono>
 #include <netinet/in.h>
+#include <cstring>
+#include <arpa/inet.h>
+
+#define EVENTS 2
+#define RESERVATION 4
+#define TICKETS 6
+#define BAD_REQUEST 255
 
 using std::tuple;
 using std::pair;
@@ -24,6 +31,7 @@ using std::cerr;
 using std::cout;
 
 using message_t = uint8_t;
+using description_length_t = uint8_t;
 using timeout_t = uint32_t;
 using ticket_count_t = uint16_t;
 using event_id_t = uint32_t;
@@ -467,17 +475,79 @@ size_t get_client_message(const int& socket_fd, struct sockaddr_in* client_addre
     return bytes_read;
 }
 
-void process_get_events(const int& socket_fd, const struct sockaddr_in& client_address, char* buffer) {
+
+
+bool put_event_into_buffer(const event_ptr& event, const event_id_t& id, char* buffer, size_t& bytes_in_buffer) {
+    // Check if it fits into the buffer.
+    ticket_count_t ticket_count = event->getTicketCount();
+    string description = event->getDescription();
+
+    size_t size = sizeof(event_id_t) + sizeof(ticket_count_t) + sizeof(description_length_t) + 
+        sizeof(char) * description.length();
     
+    if (bytes_in_buffer + size > MAX_UDP_CAPACITY) {
+        // Not enough space!
+        return false;
+    }
+
+    // Put event id into the buffer.
+    event_id_t id_conv = htonl(id);
+    std::memcpy(buffer + bytes_in_buffer, &id_conv, sizeof(event_id_t));
+    bytes_in_buffer += sizeof(event_id_t);
+
+    // Put ticket count into the buffer.
+    ticket_count_t ticket_count_conv = htons(ticket_count);
+    std::memcpy(buffer + bytes_in_buffer, &ticket_count_conv, sizeof(ticket_count_t));
+    bytes_in_buffer += sizeof(ticket_count_t);
+
+    // Put description length into the buffer.
+    description_length_t description_length = description.length();
+    std::memcpy(buffer + bytes_in_buffer, &description_length, sizeof(description_length_t));
+    bytes_in_buffer += sizeof(description_length_t);
+
+    // Put description into the buffer.
+    for (size_t i = 0; i < description_length; i++)
+    {
+        char c = description.at(i);
+        std::memcpy(buffer + bytes_in_buffer, &c, sizeof(char));
+        bytes_in_buffer += sizeof(char);
+    }
+    return true;
 }
 
-void process_get_reservation(const int& socket_fd, const struct sockaddr_in& client_address, char* buffer) {
+void process_get_events(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
+    // Get vector of events.
+    vector<event_ptr> events = db.getEvents();
     
+    // Prepare message to be sent out.
+    buffer[0] = EVENTS;
+    size_t bytes_in_buffer = 1;
+
+    event_id_t i = 0;
+    for(auto& event : events) {
+        bool success = put_event_into_buffer(event, i++, buffer, bytes_in_buffer);
+        if (!success) {
+            // No more events fit into the buffer.
+            break;
+        }
+    }
+
+    ssize_t res = sendto(socket_fd, buffer, bytes_in_buffer, 0, (struct sockaddr *) client_address, 
+        sizeof(*client_address));
+    
+    if (res < 0) {
+        cerr << "Error occured while sending events to the client! Errno: " << errno << '\n';
+        exit(EXIT_FAILURE);
+    }
 }
 
-void process_get_tickets(const int& socket_fd, const struct sockaddr_in& client_address, char* buffer) {
+// void process_get_reservation(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
     
-}
+// }
+
+// void process_get_tickets(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
+    
+// }
 
 // Returns true iff message_id is known and the length is correct.
 bool proper_message_length(const message_t& message_id, const size_t& bytes_read) {
@@ -498,8 +568,8 @@ bool proper_message_length(const message_t& message_id, const size_t& bytes_read
     }
 }
 
-void process_client_request(const int& socket_fd, const struct sockaddr_in& client_address, 
-    char* buffer, const size_t& bytes_read) {
+void process_client_request(const int& socket_fd, const struct sockaddr_in* client_address, 
+    char* buffer, const size_t& bytes_read, EventDatabase& db) {
     message_t message_id = buffer[0];
 
     // Check if message_id is known and if the number of sent bytes is correct.
@@ -511,13 +581,13 @@ void process_client_request(const int& socket_fd, const struct sockaddr_in& clie
     switch (message_id)
     {
         case 1:
-            process_get_events(socket_fd, client_address, buffer);
+            process_get_events(socket_fd, client_address, buffer, db);
             break;
         case 3:
-            process_get_reservation(socket_fd, client_address, buffer);
+            // process_get_reservation(socket_fd, client_address, buffer, db);
             break;
         case 5:
-            process_get_tickets(socket_fd, client_address, buffer);
+            // process_get_tickets(socket_fd, client_address, buffer, db);
             break;
     }
 }
@@ -540,7 +610,7 @@ int main(int argc, char* argv[])
     {
         struct sockaddr_in client_address;
         size_t bytes_read = get_client_message(socket_fd, &client_address, buffer);
-        process_client_request(socket_fd, client_address, buffer, bytes_read);
+        process_client_request(socket_fd, &client_address, buffer, bytes_read, db);
     }
 
     close(socket_fd);
