@@ -393,10 +393,14 @@ tuple<string, uint16_t, uint32_t> parse_arguments(const int& argc, char* argv[])
     bool file_overwritten = false;
     long int port_number = DEFAULT_PORT_NUMBER;
     long int timeout = DEFAULT_TIMEOUT;
+    
+    // Validates if unknown options were provided.
+    int counter = 1;
 
     int opt;
     while ((opt = getopt(argc, argv, "f:p:t:")) != -1) 
     {
+        counter += 2;
         switch (opt)
         {
             case 'f':
@@ -418,6 +422,10 @@ tuple<string, uint16_t, uint32_t> parse_arguments(const int& argc, char* argv[])
     }
     if (!file_overwritten) {
         cerr << "File name was not provided!\n";
+        exit(EXIT_FAILURE);
+    }
+    else if (argc != counter) {
+        cerr << USAGE_MESSAGE;
         exit(EXIT_FAILURE);
     }
     return {file_name, (uint16_t) port_number, (uint32_t) timeout};
@@ -627,7 +635,7 @@ struct __attribute__((packed)) tickets_response {
 
 void process_get_tickets(const int& socket_fd, const struct sockaddr_in* client_address, char* buffer, EventDatabase& db) {
     tickets_request* message = (tickets_request *) buffer;
-    message->reservation_id = htonl(message->reservation_id);
+    message->reservation_id = ntohl(message->reservation_id);
 
     string cookie = "";
     for (size_t i = 0; i < COOKIE_LENGTH; i++)
