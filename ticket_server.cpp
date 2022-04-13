@@ -671,7 +671,7 @@ void process_get_tickets(const int& socket_fd, const struct sockaddr_in* client_
     std::memcpy(buffer, &response, sizeof(tickets_response));
     std::memcpy(buffer + sizeof(tickets_response), &tickets_arr, ticket_arr_len);
 
-    ssize_t res = sendto(socket_fd, buffer, sizeof(reservation_response) + ticket_arr_len, 0, 
+    ssize_t res = sendto(socket_fd, buffer, sizeof(tickets_response) + ticket_arr_len, 0, 
         (struct sockaddr *) client_address, sizeof(*client_address));
 
     if (res < 0) {
