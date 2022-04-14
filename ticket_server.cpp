@@ -58,7 +58,7 @@ const uint8_t MIN_COOKIE_CODE = 33;
 const uint8_t MAX_COOKIE_CODE = 126;
 const size_t MAX_UDP_CAPACITY = 65507;
 const reservation_id_t MIN_RESERVATION_ID = 1000000;
-const string USAGE_MESSAGE = "Usage: [-f file] [-p port] [-t timeout]\n";
+const string USAGE_MESSAGE = "Usage: -f file [-p port] [-t timeout]\n";
 
 struct Ticket
 {
